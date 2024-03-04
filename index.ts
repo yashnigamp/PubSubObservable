@@ -1,17 +1,16 @@
 interface ObservableInterface<T> {
-  subscribe(observer: (data: T) => void): void; //change in names required
-  unsubscribe(observer: (data: T) => void): void; //change in names required
-  publish(data: T): void;//change in names required
-    // TO subscribe to multiple topics 
-    // To clear all the topics state/messages 
-    // To publish same message/state to multiple topics
-    // To get the last published message/state
-    // To get the list of published message/state
-    // 
+  subscribeTo(observer: Observer<T>): void; //change in names required
+  publishTo(data: T): void; //change in names required
+  // To get the last published message/state
+  getLastPublishedEvent(): T | undefined;
+  // To get the list of published message/state
+  getListOfEvents(): Events<T>;
+  unsubscribeTo(observer: Observer<T>): void;
+  clearObservable(): void;
 }
-export const EVENTS = "__events__";
-export const SHARED = "__shared__";
-export const OBSERVERS = "__observers__";
+export const EVENTS = '__events__';
+export const SHARED = '__shared__';
+export const OBSERVERS = '__observers__';
 export type Events<T = any> = T[];
 
 export type ObserverOptions<T = any> = {
@@ -34,88 +33,191 @@ declare global {
     };
   }
 }
+export type ObservableData = {
+  name: [string, ...string[]];
+  type?: 'windowed-observables' | 'rxjs';
+};
 //adapter for windowed-observables
 
-class WindowedObservableAdapter<T> implements ObservableInterface<T> {
-    private _namespace: string;
-    private _sharedWindow: Window;
+class WindowedObservable<T = any> {
+  private _namespace!: string;
+  private _sharedWindow: Window;
 
-    constructor(namespace: string) {
-        this._namespace = namespace;
-        this._sharedWindow = WindowedObservableAdapter.getSharedWindow();
-        this.initialize();
+  constructor(namespace: string) {
+    try {
+      this._sharedWindow = WindowedObservable.getSharedWindow();
+      this.initialize();
+    } catch (error) {
+      console.error('Error initializing shared window:', error);
+      // Handle error appropriately
+    }
+    this.namespace = namespace;
+  }
+
+  private static getSharedWindow(): Window {
+    if (typeof window !== 'undefined' && window.top) {
+      return window.top;
+    } else {
+      throw new Error('Unable to access top-level window.');
+    }
+  }
+  // istanbul ignore next
+  private initialize() {
+    if (!this._sharedWindow[SHARED]) {
+      this._sharedWindow[SHARED] = {
+        [EVENTS]: {},
+        [OBSERVERS]: {},
+      };
     }
 
-    private static getSharedWindow(): Window {
-        if (typeof window !== 'undefined' && window.top) {
-            return window.top;
-        } else {
-            throw new Error('Unable to access top-level window.');
-        }
+    if (!this._sharedWindow[SHARED][EVENTS]) {
+      this._sharedWindow[SHARED][EVENTS] = {};
     }
 
-    private initialize() {
-        if (!this._sharedWindow[SHARED]) {
-            this._sharedWindow[SHARED] = {
-                [EVENTS]: {},
-                [OBSERVERS]: {},
-            };
-        }
+    if (!this._sharedWindow[SHARED][OBSERVERS]) {
+      this._sharedWindow[SHARED][OBSERVERS] = {};
+    }
+  }
 
-        if (!this._sharedWindow[SHARED][EVENTS][this._namespace]) {
-            this._sharedWindow[SHARED][EVENTS][this._namespace] = [];
-        }
+  set namespace(namespace: string) {
+    this._namespace = namespace;
 
-        if (!this._sharedWindow[SHARED][OBSERVERS][this._namespace]) {
-            this._sharedWindow[SHARED][OBSERVERS][this._namespace] = [];
-        }
+    // istanbul ignore next
+    if (!this.events) this.events = [];
+
+    // istanbul ignore next
+    if (!this.observers) this.observers = [];
+  }
+
+  private get events(): Events<T> {
+    return this._sharedWindow[SHARED][EVENTS][this._namespace];
+  }
+
+  private set events(newEvents: Events<T>) {
+    this._sharedWindow[SHARED][EVENTS][this._namespace] = newEvents;
+  }
+
+  private get observers(): Observers<T> {
+    return this._sharedWindow[SHARED][OBSERVERS][this._namespace];
+  }
+
+  private set observers(newObservers: Observers<T>) {
+    this._sharedWindow[SHARED][OBSERVERS][this._namespace] = newObservers;
+  }
+
+  getEvents(): Events<T> {
+    return this.events;
+  }
+
+  getLastEvent(): T | undefined {
+    const events = this.events;
+    if (!events.length) {
+      return;
     }
 
-    subscribe(observer: (data: T) => void): void {
-        this._sharedWindow[SHARED][OBSERVERS][this._namespace].push(observer);
-    }
+    const lastEvent = events[events.length - 1];
 
-    unsubscribe(observer: (data: T) => void): void {
-        this._sharedWindow[SHARED][OBSERVERS][this._namespace] = this._sharedWindow[SHARED][OBSERVERS][this._namespace]
-            .filter(obs => obs !== observer);
-    }
+    return lastEvent;
+  }
 
-    publish(data: T): void {
-        const observers = this._sharedWindow[SHARED][OBSERVERS][this._namespace];
-        const events = this._sharedWindow[SHARED][EVENTS][this._namespace];
-        observers.forEach(observer => observer(data));
-        events.push(data);
-    }
+  publish(data: T): void {
+    const events = this.events;
+    const lastEvent = this.getLastEvent();
 
-    // Add other methods as needed
-}
+    this.observers.forEach(observer => observer(data, { events, lastEvent }));
 
+    this.events.push(data);
+  }
 
-//adapter for rxjs
-class RxJSObservableAdapter<T> implements ObservableInterface<T> {
-    
-}
+  dispatch = this.publish;
 
-//factory methods to define targets based on configs
-class ObservableFactory {
-  static createObservable<T>(
-    type: "windowed-observables" | "rxjs"
-  ): ObservableInterface<T> {
-    switch (type) {
-      case "windowed-observables":
-        return new WindowedObservableAdapter<T>();
-      case "rxjs":
-        return new RxJSObservableAdapter<T>();
-      default:
-        throw new Error("Unsupported observable type");
-    }
+  subscribe(observer: Observer<T>): void {
+    this.observers = this.observers.concat(observer);
+  }
+
+  unsubscribe(observer: Observer<T>): void {
+    this.observers = this.observers.filter(obs => obs !== observer);
+  }
+
+  clear(): void {
+    const events = this.events;
+    const lastEvent = this.getLastEvent();
+
+    this.observers.forEach(observer =>
+      observer(undefined, { events, lastEvent })
+    );
+
+    this.events = [];
+    this.observers = [];
   }
 }
 
-//  example:
-const observableType = "windowed-observables"; // or 'rxjs'
-const observable = ObservableFactory.createObservable(observableType);
-observable.subscribe((data) => {
-  console.log("Received data:", data);
-});
-observable.publish("Hello, world!");
+class WindowedObservableAdapter<T> extends WindowedObservable
+  implements ObservableInterface<T> {
+  constructor(namespace: string) {
+    super(namespace);
+  }
+  subscribeTo(observer: Observer<T>): void {
+    this.subscribe(observer);
+  }
+  publishTo(data: T): void {
+    this.publish(data);
+  }
+  getLastPublishedEvent(): T | undefined {
+    return this.getLastEvent();
+  }
+  getListOfEvents(): Events<T> {
+    return this.getEvents();
+  }
+  unsubscribeTo(observer: Observer<T>): void {
+    this.unsubscribe(observer);
+  }
+  clearObservable(): void {
+    this.clear();
+  }
+}
+
+//adapter for rxjs
+// class RxJSObservableAdapter<T> extends RxJS implements ObservableInterface<T>{}
+
+//factory methods to define targets based on configs
+class ObservableFactory {
+  static createObservable<T>(data: ObservableData) {
+    // switch (data.type) {
+    //   case 'windowed-observables':
+    //     return new WindowedObservableAdapter<T>(data.name);
+    //   case 'rxjs':
+    //     return new RxJSObservableAdapter<T>();
+    //   default:
+    //     return new WindowedObservableAdapter<T>(data.name);
+    // }
+    return data.name.map(namespace => new WindowedObservableAdapter(namespace));
+  }
+  static subscribeAll<T>(
+    instances: WindowedObservableAdapter<T>[],
+    callback: Observer<T>
+  ) {
+    instances.forEach(instance => {
+      instance.subscribeTo(callback);
+    });
+  }
+
+  static unsubscribeAll<T>(
+    instances: WindowedObservableAdapter<T>[],
+    callback: Observer<T>
+  ) {
+    instances.forEach(instance => {
+      instance.unsubscribeTo(callback);
+    });
+  }
+  static clearAll<T>(instances: WindowedObservableAdapter<T>[]) {
+    instances.forEach(instance => {
+      instance.clearObservable();
+    });
+  }
+}
+
+// //  example:
+// const observableType = "windowed-observables"; // or 'rxjs'
+const observable = ObservableFactory.createObservable({ name: ['Yash'] });
+console.log(observable);
