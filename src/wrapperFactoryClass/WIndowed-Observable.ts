@@ -3,7 +3,7 @@ import { Events, Observer, Observers } from "../types";
 
 export class WindowedObservable<T = any> {
   private _namespace!: string;
-  private _sharedWindow: Window;
+  private _sharedWindow: Window = window;
 
   constructor(namespace: string) {
     try {
